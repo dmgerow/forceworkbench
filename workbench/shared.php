@@ -1,4 +1,6 @@
 <?php
+require __DIR__ . '/../vendor/autoload.php';
+require_once "util/ErrorLogging.php";
 require_once "util/ExpandableTree.php";
 
 function disallowDoctype($xmlString) {
@@ -15,15 +17,7 @@ function verifyCallingFromCLI() {
 }
 
 function hasRedis() {
-    echo '<script>console.log("Checking Redis")</script>';
     $redisUrl = WorkbenchConfig::get()->value("redisUrl");
-    echo '<script>console.log('. json_encode( $redisUrl ) .')</script>';
-    echo '<script>console.log("Redis class exists")</script>';
-    echo '<script>console.log('. class_exists("Redis") .')</script>';
-    echo '<script>console.log("Is empty?")</script>';
-    echo '<script>console.log('. empty($redisUrl) .')</script>';
-    echo '<script>console.log("Return value")</script>';
-    echo '<script>console.log('. (!empty($redisUrl) && class_exists("Redis") ).')</script>';
     return !empty($redisUrl) && class_exists("Redis");
 }
 
@@ -37,10 +31,7 @@ function redis() {
         $r = new Redis();
         $r->connect(parse_url($redisUrl, PHP_URL_HOST), parse_url($redisUrl, PHP_URL_PORT));
         if (!is_array(parse_url($redisUrl, PHP_URL_PASS))) {
-            echo '<script>console.log("Parsing Redis")</script>';
             $r->auth(parse_url($redisUrl, PHP_URL_PASS));
-            echo '<script>console.log('. json_encode( $r ) .')</script>';
-
         }
 
         $GLOBALS['REDIS'] = $r;
@@ -710,78 +701,24 @@ function prettyPrintXml($xml, $htmlOutput=FALSE) {
     return ($htmlOutput) ? '<pre>' . htmlspecialchars($xml) . '</pre>' : $xml;
 }
 
-function rc4($data, $salt, $encrypt) {
-    $key = array();
-    $result = "";
-    $state = array();
-    $salt = md5(str_rot13($salt));
-    $len = strlen($salt);
-
-    if ($encrypt)
-    {
-        $data = str_rot13($data);
-    }
-    else
-    {
-        $data = base64_decode($data);
-    }
-
-    $ii = -1;
-
-    while (++$ii < 256)
-    {
-        $key[$ii] = ord(substr($salt, (($ii % $len) + 1), 1));
-        $state[$ii] = $ii;
-    }
-
-    $ii = -1;
-    $j = 0;
-
-    while (++$ii < 256)
-    {
-        $j = ($j + $key[$ii] + $state[$ii]) % 255;
-        $t = $state[$j];
-
-        $state[$ii] = $state[$j];
-        $state[$j] = $t;
-    }
-
-    $len = strlen($data);
-    $ii = -1;
-    $j = 0;
-    $k = 0;
-
-    while (++$ii < $len)
-    {
-        $j = ($j + 1) % 256;
-        $k = ($k + $state[$j]) % 255;
-        $t = $key[$j];
-
-        $state[$j] = $state[$k];
-        $state[$k] = $t;
-
-        $x = $state[(($state[$j] + $state[$k]) % 255)];
-        $result .= chr(ord($data[$ii]) ^ $x);
-    }
-
-    if ($encrypt)
-    {
-        $result = base64_encode($result);
-    }
-    else
-    {
-        $result = str_rot13($result);
-    }
-
-    return $result;
-}
-
 function crypto_serialize($data) {
-    return rc4(base64_encode(serialize($data)), WorkbenchConfig::get()->value("rc4Secret"), true);
+    return sodium_crypto_box(serialize($data), WorkbenchConfig::get()->value("nonce"), WorkbenchConfig::get()->value("sodiumKey"));
 }
 
 function crypto_unserialize($data) {
-    return unserialize(base64_decode(rc4($data, WorkbenchConfig::get()->value("rc4Secret"), false)));
+    $whitelistClasses = [
+        ApexExecuteFutureTask::class, 
+        QueryFutureTask::class, 
+        ConnectionConfiguration::class, 
+        RestExplorerFutureTask::class, 
+        QueryRequest::class,
+        WorkbenchHandledException::class,
+        WorkbenchAuthenticationException::class
+    ];
+    
+    $decryptedData = sodium_crypto_box_open($data, WorkbenchConfig::get()->value("nonce"), WorkbenchConfig::get()->value("sodiumKey"));
+    
+    return unserialize($decryptedData, ['allowed_classes' => $whitelistClasses]);
 }
 
 function debug($showSuperVars = true, $showSoap = true, $customName = null, $customValue = null) {
